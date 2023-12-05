@@ -23,7 +23,7 @@ module ddr3_top
 	output DDR3_nRESET,
 	output DDR3_CKE,
     output DDR3_ODT,
-    output [1:0] DDR3_DM,
+    output [1:0] DDR3_DQM,
 
     output [7:0] led,
     output [7:0] led2,
@@ -85,7 +85,7 @@ ddr3_controller #(.ROW_WIDTH(13), .COL_WIDTH(10)) u_ddr3 (
     .DDR3_CK(DDR3_CK),
     .DDR3_CKE(DDR3_CKE),
     .DDR3_ODT(DDR3_ODT),
-    .DDR3_DM(DDR3_DM)
+    .DDR3_DM(DDR3_DQM)
 );
 
 localparam INIT = 0;
@@ -178,7 +178,7 @@ always @(posedge clk) begin
         WRITE1: if (tick) begin 
             wr <= 1'b1;
             addr <= 26'h0000;
-            din <= 16'h1122;
+            din <= 16'h1234;
             work_counter <= 0;
             state <= WRITE2;      /* WRITE2 */
             tick_counter <= 20'd100_000;        // 1ms
@@ -186,7 +186,7 @@ always @(posedge clk) begin
         WRITE2: if (tick) begin 
             wr <= 1'b1;
             addr <= 26'h0001;
-            din <= 16'h3344;
+            din <= 16'h5678;
             work_counter <= 0;
             state <= WRITE3;      /* WRITE2 */
             tick_counter <= 20'd100_000;        // 1ms
@@ -197,7 +197,7 @@ always @(posedge clk) begin
             latency_write1 <= work_counter[7:0]; 
             wr <= 1'b1;
             addr <= 26'h0002;
-            din <= 16'h5566;
+            din <= 16'hABCD;
             state <= READ_START;
             work_counter <= 0;
             debug_cycle <= 0;
@@ -213,7 +213,7 @@ always @(posedge clk) begin
             result_to_print <= 0;
             if (tick) begin
                 // issue one read command every tick
-                if (addr[15:0] == 16'h0003) begin
+                if (addr[15:0] == 16'h0007) begin
                     tick_counter <= 20'd200_000;    // wait 2ms
                     state <= READ_DONE;
                 end else begin
@@ -397,7 +397,8 @@ always@(posedge clk)begin
         8'd2: `print(addr_read[15:0], 2);
         8'd3: `print("=", STR);
         8'd4: `print(actual, 2);
-//        8'd4: `print(actual128[127:0], 16);      // print everything for debug
+        8'd5: `print(" ", STR);
+        8'd6: `print(actual128[127:0], 16);      // print everything for debug
         endcase
         print_counters <= print_counters == 8'd255 ? 0 : print_counters + 1;
     end
