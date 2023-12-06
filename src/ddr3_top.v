@@ -25,8 +25,7 @@ module ddr3_top
     output DDR3_ODT,
     output [1:0] DDR3_DQM,
 
-    output [7:0] led,
-    output [7:0] led2,
+    output [5:0] led,
 
     output uart_txp
 );
@@ -100,8 +99,9 @@ localparam WRITE_BLOCK = 8;
 localparam VERIFY_BLOCK = 9;
 localparam WIPE = 10;
 localparam FINISH = 11;
+localparam RESET = 12;
 
-reg [7:0] state, end_state;
+reg [3:0] state, end_state;
 reg [7:0] work_counter; // 10ms per state to give UART time to print one line of message
 reg [7:0] latency_write1, latency_write2, latency_read;
 
@@ -147,195 +147,196 @@ reg wlevel_done = 0;
 reg rlevel_done = 0;
 reg [7:0] read_level_cnt;
 
+//LEDs on Tang primer dock
+assign led = ~{state[3:0], read_calib_done, write_level_done}; 
+
 // LED module in right-bottom PMOD
-assign led = ~{state[3:0], busy, error_bit, read_calib_done, write_level_done}; 
-assign led2 = ~wstep;       // for write leveling
+//assign led = ~{state[3:0], busy, error_bit, read_calib_done, write_level_done}; 
+//assign led2 = ~wstep;       // for write leveling
 //assign led2 = ~{read_calib_done, 2'b0, rclkpos[1:0], rclksel[2:0]};   // for read calib
 
 typedef logic [7:0] BYTE;
 typedef logic [25:0] ADDR;
 
 always @(posedge clk) begin
-    wr <= 0; rd <= 0; refresh <= 0; refresh_executed <= 0;
-    work_counter <= work_counter + 1;
-    tick_counter <= tick_counter == 0 ? 0 : tick_counter - 20'd1;
-    tick <= tick_counter == 20'd1;
-
-    case (state)
-        // wait for busy==0 (controller initialization done)
-        INIT: if (lock && sys_resetn && !busy && start) begin
-            state <= PRINT_STATUS;
-            tick_counter <= 20'd100_000;
-        end
-        PRINT_STATUS: if (tick) begin
-            tick_counter <= 20'd100_000;
-            work_counter <= 0;
-            addr = START_ADDR;
-            state <= WRITE1;
-        end
-
-        // Part 1 - single write/read test
-        WRITE1: if (tick) begin 
-            wr <= 1'b1;
-            addr <= 26'h0000;
-            din <= 16'h1234;
-            work_counter <= 0;
-            state <= WRITE2;      /* WRITE2 */
-            tick_counter <= 20'd100_000;        // 1ms
-        end
-        WRITE2: if (tick) begin 
-            wr <= 1'b1;
-            addr <= 26'h0001;
-            din <= 16'h5678;
-            work_counter <= 0;
-            state <= WRITE3;      /* WRITE2 */
-            tick_counter <= 20'd100_000;        // 1ms
-        end
-        WRITE3: if (tick) begin
-            if (busy) error_bit <= 1;
-            // record write latency and issue another write command
-            latency_write1 <= work_counter[7:0]; 
-            wr <= 1'b1;
-            addr <= 26'h0002;
-            din <= 16'hABCD;
-            state <= READ_START;
-            work_counter <= 0;
-            debug_cycle <= 0;
-            tick_counter <= 20'd100_000;        // wait 1ms
-        end
-
-        READ_START: if (tick) begin
-            addr[15:0] <= 16'h0000;
-            tick_counter <= 20'd100_000;        // wait 1ms
-            state <= READ;
-        end
-        READ: begin
-            result_to_print <= 0;
-            if (tick) begin
-                // issue one read command every tick
-                if (addr[15:0] == 16'h0007) begin
-                    tick_counter <= 20'd200_000;    // wait 2ms
-                    state <= READ_DONE;
-                end else begin
-                    rd <= 1'b1;
-                    tick_counter <= 20'd200_000;    // wait 2ms
-                end
-            end else if (data_ready) begin
-                actual <= dout;
-                actual128 <= dout128;
-                addr_read <= addr;
-                result_to_print <= 1'b1;
-                addr[15:0] <= addr[15:0] + 16'd1;
-            end
-        end
-        READ_DONE: begin
-            state <= WIPE;
-            work_counter <= 0;
-            addr <= START_ADDR;
-        end
-
-        // Part 2 - bulk write/read test
-        WIPE: begin
-            if (addr == ADDR'(START_ADDR + TOTAL_SIZE)) begin
-                work_counter <= 0;
-                addr <= START_ADDR;
-                state <= WRITE_BLOCK;
-            end else begin
-                if (work_counter == 0) begin
-                    if (!refresh_needed) begin
-                        wr <= 1'b1;
-                        din <= 0;
-                        refresh_cycle <= 0;
-                    end else begin
-                        refresh <= 1'b1;
-                        refresh_executed <= 1'b1;
-                        refresh_cycle <= 1'b1;
-                        refresh_count <= refresh_count + 1;
-                        refresh_addr <= addr;
-                    end
-                end else if (!wr && !refresh && !busy) begin
-                    work_counter <= 0;
-                    if (!refresh_cycle)
-                        addr <= addr + 1;
-                end
-            end
-        end
-
-        WRITE_BLOCK: begin
-            // write some data
-            if (addr == ADDR'(START_ADDR + TOTAL_SIZE)) begin
-                state <= VERIFY_BLOCK;
-                work_counter <= 0;
-                addr <= START_ADDR;
-            end else begin
-                if (work_counter == 0) begin
-                    if (!refresh_needed) begin
-                        wr <= 1'b1;
-                        din <= addr[15:0] ^ {6'b0, addr[25:16]} ^ 16'd59;
-                        refresh_cycle <= 0;
-                    end else begin
-                        refresh <= 1'b1;
-                        refresh_executed <= 1'b1;
-                        refresh_cycle <= 1'b1;
-                        refresh_count <= refresh_count + 1;
-                        refresh_addr <= addr;
-                    end
-                end else if (!wr && !refresh && !busy) begin
-                    work_counter <= 0;
-                    if (!refresh_cycle)
-                        addr <= addr + 1;
-                end
-            end
-        end
-
-        VERIFY_BLOCK: begin
-            if (addr == ADDR'(START_ADDR + TOTAL_SIZE)) begin
-                end_state <= state;
-                state <= FINISH;
-            end else begin
-                if (work_counter == 0) begin
-                    // send next read request or refresh
-                    if (!refresh_needed) begin
-                        rd <= 1'b1;
-                        refresh_cycle <= 1'b0;
-                    end else begin
-                        refresh <= 1'b1;
-                        refresh_executed <= 1'b1;
-                        refresh_cycle <= 1'b1;
-                        refresh_count <= refresh_count + 1;
-                        refresh_addr <= addr;
-                    end
-                end else if (data_ready) begin
-                    // verify result
-                    expected <= addr[15:0] ^ {6'b0, addr[25:16]} ^ 16'd59;
-                    actual <= dout;
-                    actual128 <= dout128;
-                    if (dout[7:0] != BYTE'(addr ^ {6'b0, addr[25:16]} ^ 16'd59)) begin       // only test lower byte
-                        error_bit <= 1'b1;
-                        end_state <= state;
-                        state <= FINISH;
-                    end
-                end else if (!rd && !refresh && !busy) begin
-                    work_counter <= 0;      // start next read
-                    if (!refresh_cycle) begin
-                        addr <= addr + 1;
-                    end
-                end
-            end
-        end
-
-
-
-
-    endcase
-
     if (~sys_resetn) begin
         error_bit <= 1'b0;
         tick <= 1'b0;
         tick_counter <= 20'd100_000;        // wait 1ms for everything to initialize
         latency_write1 <= 0; latency_write2 <= 0; latency_read <= 0;
         refresh_count <= 0;
-        state <= INIT;
+        state <= RESET;
+    end else begin
+        wr <= 0; rd <= 0; refresh <= 0; refresh_executed <= 0;
+        work_counter <= work_counter + 1;
+        tick_counter <= tick_counter == 0 ? 0 : tick_counter - 20'd1;
+        tick <= tick_counter == 20'd1;
+
+        case (state)
+            RESET:
+                state <= INIT;
+            // wait for busy==0 (controller initialization done)
+            INIT: if (lock && sys_resetn && !busy && start) begin
+                state <= PRINT_STATUS;
+                tick_counter <= 20'd100_000;
+            end
+            PRINT_STATUS: if (tick) begin
+                tick_counter <= 20'd100_000;
+                work_counter <= 0;
+                addr = START_ADDR;
+                state <= WRITE1;
+            end
+
+            // Part 1 - single write/read test
+            WRITE1: if (tick) begin 
+                wr <= 1'b1;
+                addr <= 26'h0000;
+                din <= 16'h1234;
+                work_counter <= 0;
+                state <= WRITE2;      /* WRITE2 */
+                tick_counter <= 20'd100_000;        // 1ms
+            end
+            WRITE2: if (tick) begin 
+                wr <= 1'b1;
+                addr <= 26'h0001;
+                din <= 16'h5678;
+                work_counter <= 0;
+                state <= WRITE3;      /* WRITE2 */
+                tick_counter <= 20'd100_000;        // 1ms
+            end
+            WRITE3: if (tick) begin
+                if (busy) error_bit <= 1;
+                // record write latency and issue another write command
+                latency_write1 <= work_counter[7:0]; 
+                wr <= 1'b1;
+                addr <= 26'h0002;
+                din <= 16'hABCD;
+                state <= READ_START;
+                work_counter <= 0;
+                debug_cycle <= 0;
+                tick_counter <= 20'd100_000;        // wait 1ms
+            end
+
+            READ_START: if (tick) begin
+                addr[15:0] <= 16'h0000;
+                tick_counter <= 20'd100_000;        // wait 1ms
+                state <= READ;
+            end
+            READ: begin
+                result_to_print <= 0;
+                if (tick) begin
+                    // issue one read command every tick
+                    if (addr[15:0] == 16'h0007) begin
+                        tick_counter <= 20'd200_000;    // wait 2ms
+                        state <= READ_DONE;
+                    end else begin
+                        rd <= 1'b1;
+                        tick_counter <= 20'd200_000;    // wait 2ms
+                    end
+                end else if (data_ready) begin
+                    actual <= dout;
+                    actual128 <= dout128;
+                    addr_read <= addr;
+                    result_to_print <= 1'b1;
+                    addr[15:0] <= addr[15:0] + 16'd1;
+                end
+            end
+            READ_DONE: begin
+                state <= WIPE;
+                work_counter <= 0;
+                addr <= START_ADDR;
+            end
+
+            // Part 2 - bulk write/read test
+            WIPE: begin
+                if (addr == ADDR'(START_ADDR + TOTAL_SIZE)) begin
+                    work_counter <= 0;
+                    addr <= START_ADDR;
+                    state <= WRITE_BLOCK;
+                end else begin
+                    if (work_counter == 0) begin
+                        if (!refresh_needed) begin
+                            wr <= 1'b1;
+                            din <= 0;
+                            refresh_cycle <= 0;
+                        end else begin
+                            refresh <= 1'b1;
+                            refresh_executed <= 1'b1;
+                            refresh_cycle <= 1'b1;
+                            refresh_count <= refresh_count + 1;
+                            refresh_addr <= addr;
+                        end
+                    end else if (!wr && !refresh && !busy) begin
+                        work_counter <= 0;
+                        if (!refresh_cycle)
+                            addr <= addr + 1;
+                    end
+                end
+            end
+
+            WRITE_BLOCK: begin
+                // write some data
+                if (addr == ADDR'(START_ADDR + TOTAL_SIZE)) begin
+                    state <= VERIFY_BLOCK;
+                    work_counter <= 0;
+                    addr <= START_ADDR;
+                end else begin
+                    if (work_counter == 0) begin
+                        if (!refresh_needed) begin
+                            wr <= 1'b1;
+                            din <= addr[15:0] ^ {6'b0, addr[25:16]} ^ 16'd59;
+                            refresh_cycle <= 0;
+                        end else begin
+                            refresh <= 1'b1;
+                            refresh_executed <= 1'b1;
+                            refresh_cycle <= 1'b1;
+                            refresh_count <= refresh_count + 1;
+                            refresh_addr <= addr;
+                        end
+                    end else if (!wr && !refresh && !busy) begin
+                        work_counter <= 0;
+                        if (!refresh_cycle)
+                            addr <= addr + 1;
+                    end
+                end
+            end
+
+            VERIFY_BLOCK: begin
+                if (addr == ADDR'(START_ADDR + TOTAL_SIZE)) begin
+                    end_state <= state;
+                    state <= FINISH;
+                end else begin
+                    if (work_counter == 0) begin
+                        // send next read request or refresh
+                        if (!refresh_needed) begin
+                            rd <= 1'b1;
+                            refresh_cycle <= 1'b0;
+                        end else begin
+                            refresh <= 1'b1;
+                            refresh_executed <= 1'b1;
+                            refresh_cycle <= 1'b1;
+                            refresh_count <= refresh_count + 1;
+                            refresh_addr <= addr;
+                        end
+                    end else if (data_ready) begin
+                        // verify result
+                        expected <= addr[15:0] ^ {6'b0, addr[25:16]} ^ 16'd59;
+                        actual <= dout;
+                        actual128 <= dout128;
+                        if (dout[7:0] != BYTE'(addr ^ {6'b0, addr[25:16]} ^ 16'd59)) begin       // only test lower byte
+                            error_bit <= 1'b1;
+                            end_state <= state;
+                            state <= FINISH;
+                        end
+                    end else if (!rd && !refresh && !busy) begin
+                        work_counter <= 0;      // start next read
+                        if (!refresh_cycle) begin
+                            addr <= addr + 1;
+                        end
+                    end
+                end
+            end
+        endcase
     end
 end
 
